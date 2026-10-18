@@ -1,0 +1,116 @@
+---
+title: "Tidy the WHO dataset"
+author: "Maroan Mejric"
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+The `tidyr::who` dataset contains tuberculosis (TB) cases broken down by year, country, age, gender, and diagnosis method. The data comes from the 2014 [World Health Organization Global Tuberculosis Report](http://www.who.int/tb/country/data/download/en/).
+
+This is a very typical real-life example dataset. It contains redundant columns, odd variable codes, and many missing values. In short, `who` is messy, and we'll need multiple steps to tidy it.
+
+Let's have a look at what we've got:
+
+```{r}
+library(tidyr)
+library(dplyr)
+
+who
+```
+
+* `country`, `iso2`, and `iso3` are three variables that redundantly specify the country
+* `year` is clearly also a variable
+* the other columns (e.g. `new_sp_m014`) encode in their names four variables: whether the cases are new or old (`new`), the type of TB (`rel`, `ep`, `sn`, `sp`), the sex (`m`, `f`) and the age group (`014`, `1524`, ..., `65`)
+
+### Step 1: gather
+
+We gather together all the columns from `new_sp_m014` to `newrel_f65`. We use the variable `key` for the gathered columns and the variable `cases` for the values. There are a lot of missing values in the current representation, so we use `values_drop_na` to remove them.
+
+```{r}
+who1 <- who %>%
+  pivot_longer(new_sp_m014:newrel_f65, names_to = "key", values_to = "cases", values_drop_na = TRUE)
+who1
+```
+
+### Step 2: replace
+
+The names are slightly inconsistent because instead of `new_rel` we have `newrel`. We use `stringr::str_replace()` to replace the characters "newrel" with "new_rel" in the `key` column. This makes all variable names consistent.
+
+```{r}
+who2 <- who1 %>%
+  mutate(key = stringr::str_replace(key, "newrel", "new_rel"))
+who2
+
+# check: now all keys have the form new_type_sexage
+who2 %>% count(key) %>% head(20)
+```
+
+### Step 3: separate
+
+We separate the values in each code with three passes of `separate()`. First, we separate `key` after the underscore character in three new variables: `new`, `type`, and `sexage`.
+
+```{r}
+who3 <- who2 %>%
+  separate(key, into = c("new", "type", "sexage"), sep = "_")
+who3
+```
+
+Next we separate `sexage` into `sex` and `age` by splitting after the first character:
+
+```{r}
+who4 <- who3 %>%
+  separate(sexage, into = c("sex", "age"), sep = 1)
+who4
+```
+
+Finally we separate `age` into `age_low` and `age_high` by splitting after the second character (first we replace "014" with "0014" and "65" with "65100", so that all age codes have two digits for the lower bound):
+
+```{r}
+who5 <- who4 %>%
+  mutate(age = stringr::str_replace(age, "^014$", "0014")) %>%
+  mutate(age = stringr::str_replace(age, "^65$", "65100")) %>%
+  separate(age, into = c("age_low", "age_high"), sep = 2, convert = TRUE)
+who5
+```
+
+### Step 4: drop
+
+We check that the `new` column is constant in this dataset. Hence we drop column `new` as well as `iso2` and `iso3` since they're redundant.
+
+```{r}
+# check that new is constant
+who5 %>% count(new)
+
+# drop redundant columns
+who6 <- who5 %>%
+  select(-new, -iso2, -iso3)
+who6
+```
+
+### Last step: use pipe
+
+We have written the code a piece at a time, assigning each interim result to a new variable. Instead, we gradually build up a complex pipe that does all the work in one go:
+
+```{r}
+who_tidy <- who %>%
+  pivot_longer(new_sp_m014:newrel_f65, names_to = "key", values_to = "cases", values_drop_na = TRUE) %>%
+  mutate(key = stringr::str_replace(key, "newrel", "new_rel")) %>%
+  separate(key, into = c("new", "type", "sexage"), sep = "_") %>%
+  separate(sexage, into = c("sex", "age"), sep = 1) %>%
+  mutate(age = stringr::str_replace(age, "^014$", "0014")) %>%
+  mutate(age = stringr::str_replace(age, "^65$", "65100")) %>%
+  separate(age, into = c("age_low", "age_high"), sep = 2, convert = TRUE) %>%
+  select(-new, -iso2, -iso3)
+
+who_tidy
+
+# the pipe gives the same result as the step-by-step computation
+identical(who_tidy, who6)
+```
+
+Now the dataset is tidy: each row is an observation (the number of TB cases for a country, year, type of TB, sex and age group) and each column is a variable.

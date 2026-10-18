@@ -1,0 +1,116 @@
+---
+title: "Which is the best team ever in Italian soccer?"
+author: "Maroan Mejric"
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, message = FALSE, warning = FALSE, fig.align = 'center')
+```
+
+This challenge explores all matches of Italian soccer Serie A league from 1993 to current year. The dataset is contained in the website [football-data.co.uk](http://www.football-data.co.uk/italym.php).
+
+## 1. Think about how to scrape the data
+
+The page of the Italian league contains one link per season to a CSV file with all the matches of that season (the files of Serie A are called `I1.csv` and live in folders named after the season, like `9394` or `2425`). Hence the plan is:
+
+1. read the HTML of the page and extract all links to the `I1.csv` files;
+2. download each CSV and bind the seasons together in a single data frame;
+3. keep only the columns we need and the rows with a valid date.
+
+## 2. Import data by scraping the website
+
+As required by the challenge, I asked AI to write the scraping code with `rvest`. Here it is, after reading, understanding and running it:
+
+```{r}
+library(tidyverse)
+library(rvest)
+
+# the page of the Italian league
+url = "https://www.football-data.co.uk/italym.php"
+
+# read the page and extract the links to the Serie A files (I1.csv)
+links =
+  read_html(url) |>
+  html_elements("a") |>
+  html_attr("href") |>
+  str_subset("I1\\.csv$")
+
+# make the links absolute
+links = str_c("https://www.football-data.co.uk/", links)
+
+# number of seasons
+length(links)
+```
+
+Each file is read with all columns as character (the files of different seasons have different columns and the date is written sometimes with two and sometimes with four digits for the year). Then we select only the columns Date, HomeTeam, AwayTeam, FTHG (home team goals) and FTAG (away team goals), convert goals to integers and filter rows with a valid (not NA) Date:
+
+```{r}
+matches =
+  links |>
+  map(read_csv, col_types = cols(.default = col_character())) |>
+  bind_rows() |>
+  select(Date, HomeTeam, AwayTeam, FTHG, FTAG) |>
+  filter(!is.na(Date)) |>
+  mutate(FTHG = as.integer(FTHG), FTAG = as.integer(FTAG))
+
+matches
+```
+
+## 3. Compute statistics for every team
+
+We compute, for every team, the number of matches, wins, loses, draws, points and points per match. We follow the hint: first we mutate a column with the outcome of the match (H = home team wins, A = away team wins, D = draw). Then we build a table with one row per team and match (each match contributes a row for the home team and a row for the away team), we group by team and outcome and we spread the outcome into columns.
+
+```{r}
+# outcome of the match
+matches =
+  matches |>
+  mutate(outcome = case_when(FTHG > FTAG ~ "H",
+                             FTHG < FTAG ~ "A",
+                             FTHG == FTAG ~ "D"))
+
+# one row per team and match, with the result from the point of view of the team
+home =
+  matches |>
+  transmute(team = HomeTeam,
+            result = case_when(outcome == "H" ~ "wins",
+                               outcome == "A" ~ "loses",
+                               outcome == "D" ~ "draws"))
+
+away =
+  matches |>
+  transmute(team = AwayTeam,
+            result = case_when(outcome == "A" ~ "wins",
+                               outcome == "H" ~ "loses",
+                               outcome == "D" ~ "draws"))
+
+# count results per team and spread them in columns
+stats =
+  bind_rows(home, away) |>
+  count(team, result) |>
+  pivot_wider(names_from = result, values_from = n, values_fill = 0) |>
+  mutate(matches = wins + draws + loses,
+         points = 3 * wins + draws,
+         points_per_match = points / matches) |>
+  select(team, matches, wins, draws, loses, points, points_per_match) |>
+  arrange(desc(points_per_match))
+
+stats
+```
+
+The ranking by points per match tells which is the best team ever since 1993:
+
+```{r}
+head(stats, 10)
+```
+
+## 4. Data questions
+
+Some questions on the data at hand:
+
+1. Is there a home advantage in Serie A, that is, do home teams win more often than away teams, and has this advantage changed over the seasons?
+2. Which team has the longest unbeaten run (consecutive matches without losing) in the history of the league?
+3. How has the average number of goals per match evolved from 1993 to today?
+4. Which are the most balanced derbies, that is, the pairs of teams that met most often with the most even record of wins?
