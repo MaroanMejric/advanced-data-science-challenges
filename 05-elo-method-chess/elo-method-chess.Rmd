@@ -1,0 +1,211 @@
+---
+title: "The Elo method in chess"
+author: "Maroan Mejric"
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, message = FALSE, warning = FALSE, fig.align = 'center')
+```
+
+**Elo method** was coined by the physics professor and excellent chess player Arpad Elo. In 1970, FIDE, the World Chess Federation, agreed to adopt the Elo Rating System.
+
+Suppose that players $i$ and $j$ match. Let $s_{i,j}$ be the **actual score** of $i$ in the match against $j$ (1 if $i$ wins, 0 if $i$ loses, 0.5 if there is a draw), with $s_{j,i} = 1 - s_{i,j}$. Let $\mu_{i,j}$ be the **expected score** of $i$ in the match against $j$:
+
+$$
+\mu_{i,j} = \frac{1}{1 + 10^{-(r_i - r_j) / \zeta}}
+$$
+
+with $r_i$ and $r_j$ the ratings of $i$ and $j$ before the match and $\zeta$ a constant, with $\mu_{j,i} = 1 - \mu_{i,j}$. Initially all ratings are equal to 0 and after a match the ratings are updated as follows:
+
+$$
+\begin{array}{lll}
+r_{i} & \leftarrow & r_i + \kappa (s_{i,j} - \mu_{i,j})
+\\
+r_j & \leftarrow & r_j + \kappa (s_{j,i} - \mu_{j,i})
+\end{array}
+$$
+
+where $\kappa$ is a constant.
+
+## Dataset
+
+A [CSV](data.csv) with outcomes of 65053 distinct chess games (White, Black and Score). The possible values for Score represent the three possible outcomes of a chess game (1 = White wins, 0.5 = draw, 0 = Black wins).
+
+```{r}
+library(tidyverse)
+
+games = read_csv("data.csv")
+games
+
+# number of games and of players
+nrow(games)
+n_distinct(c(games$White, games$Black))
+```
+
+## 1. Has the White an advantage over the Black?
+
+The mean score of the White is the fraction of points won by the White players over all games. If there were no first-mover advantage it would be 0.5:
+
+```{r}
+# distribution of outcomes
+games |>
+  count(Score) |>
+  mutate(p = n / sum(n))
+
+# mean score of White
+mean(games$Score)
+```
+
+The White wins more often than the Black (and the mean score of the White is above 0.5), hence there is a first-mover advantage.
+
+## 2. Compute the player point rating
+
+The point rating of a player is the sum of the scores of the player over all the games played. In a game, the White gets `Score` points and the Black gets `1 - Score` points. We build a table with one row per player and game and then we sum the points of each player:
+
+```{r}
+# one row per player and game
+played = bind_rows(
+  games |> transmute(player = White, score = Score),
+  games |> transmute(player = Black, score = 1 - Score)
+)
+
+# point rating and number of games of each player
+points =
+  played |>
+  group_by(player) |>
+  summarise(games = n(), points = sum(score)) |>
+  arrange(desc(points))
+
+points
+
+# distribution of points
+ggplot(points, aes(points)) +
+  geom_histogram(binwidth = 1)
+
+summary(points$points)
+```
+
+The distribution of points is highly right skewed: most players have few points and few players have many points. This is because the point rating accumulates with the number of games played, and most players played few games while few players played many games:
+
+```{r}
+ggplot(points, aes(games)) +
+  geom_histogram(binwidth = 1)
+
+summary(points$games)
+```
+
+## 3. The sum of all Elo ratings is always 0
+
+Initially all ratings are 0, hence their sum is 0. We show that a match between $i$ and $j$ does not change the sum of ratings. The sum of the changes of the two ratings is:
+
+$$
+\kappa (s_{i,j} - \mu_{i,j}) + \kappa (s_{j,i} - \mu_{j,i}) =
+\kappa \left[ (s_{i,j} + s_{j,i}) - (\mu_{i,j} + \mu_{j,i}) \right] =
+\kappa (1 - 1) = 0
+$$
+
+since $s_{i,j} + s_{j,i} = 1$ and $\mu_{i,j} + \mu_{j,i} = 1$. The ratings of the other players do not change. Hence, by induction on the number of matches, the sum of all ratings is always 0.
+
+## 4. Compute the player Elo rating
+
+We set $\zeta = 400$ and $\kappa = 25$. The games are processed one at a time in the order in which they appear in the dataset, since the rating before a match depends on the previous matches. We take advantage of the 0-sum property: the change of rating of the Black is the opposite of the change of rating of the White, hence we compute only one expected score and one update per game.
+
+```{r}
+# logistic function (expected score)
+logistic = function(x, z = 400) {
+  return(1 / (1 + 10^(-x / z)))
+}
+
+zeta = 400
+kappa = 25
+
+# player ids
+white = games$White
+black = games$Black
+score = games$Score
+
+# all ratings start at 0 (one for each player id)
+elo = rep(0, max(c(white, black)))
+
+# process the games in order
+for (g in 1:nrow(games)) {
+  i = white[g]
+  j = black[g]
+  # expected score of White
+  mu = logistic(elo[i] - elo[j], zeta)
+  # update of White; the update of Black is the opposite (0-sum property)
+  delta = kappa * (score[g] - mu)
+  elo[i] = elo[i] + delta
+  elo[j] = elo[j] - delta
+}
+
+# Elo ratings of the players in the dataset
+ratings =
+  points |>
+  mutate(elo = elo[player]) |>
+  arrange(desc(elo))
+
+ratings
+
+# distribution of Elo ratings
+ggplot(ratings, aes(elo)) +
+  geom_histogram(binwidth = 10)
+
+summary(ratings$elo)
+```
+
+The distribution of Elo ratings is centered on 0 and has both a negative and a positive side (the mean is 0, the median is close to 0), while the distribution of points is right skewed and starts at 0. The reason is that the Elo rating does not accumulate with the number of games: a player gains rating only when it performs better than expected and loses rating when it performs worse than expected, hence a player with many games is not advantaged by the number of games. Moreover, every gain of a player is a loss of the same size for its opponent, so that the ratings are balanced around 0.
+
+Finally, we verify the 0-sum property for the Elo ratings:
+
+```{r}
+sum(elo)
+```
+
+## 5. Are point and Elo ratings correlated?
+
+```{r}
+cor(ratings$points, ratings$elo)
+cor(ratings$points, ratings$elo, method = "spearman")
+
+ggplot(ratings, aes(points, elo)) +
+  geom_point(alpha = 0.3)
+```
+
+The two ratings are positively correlated, but the correlation is moderate and the rank correlation (Spearman) is low: the two ratings order the players quite differently. Let's check the overlap of the top players:
+
+```{r}
+k = 20
+top_points = head(arrange(ratings, desc(points)), k)$player
+top_elo = head(arrange(ratings, desc(elo)), k)$player
+
+# players in both top lists
+intersect(top_points, top_elo)
+length(intersect(top_points, top_elo)) / k
+
+# top-k Elo players
+head(arrange(ratings, desc(elo)), k)
+
+# top-k point players
+head(arrange(ratings, desc(points)), k)
+```
+
+The top point players are only partially overlapping with the top Elo players: many top point players have a lot of points because they played many games, not because they are strong.
+
+## 6. The effect of the number of played games
+
+```{r}
+cor(ratings$games, ratings$points)
+cor(ratings$games, ratings$elo)
+
+ggplot(ratings, aes(games, points)) +
+  geom_point(alpha = 0.3)
+
+ggplot(ratings, aes(games, elo)) +
+  geom_point(alpha = 0.3)
+```
+
+The number of played games has a very strong effect on the point rating: points can only increase with games (a player never loses points), hence the more games a player plays, the more points it gains, almost linearly. The effect on the Elo rating is weaker: a player gains or loses rating according to its performance with respect to the expectation, and a player that performs as expected gains nothing regardless of the number of games played. In the scatterplot, players with the same number of games have very different Elo ratings, both positive and negative. The correlation is still positive because playing many games makes the Elo rating more extreme for players that are consistently stronger than their opponents (and the players with many games in this dataset tend to be strong players).
