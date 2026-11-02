@@ -1,0 +1,121 @@
+---
+title: "Concentration of S&P 500 index"
+author: "Maroan Mejric"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+In this data challenge we study how concentrated the S&P 500 is among its constituent companies.
+
+1. The S&P 500 (Standard & Poor's 500) is a stock market index that tracks the performance of 500 of the largest publicly traded companies in the United States.
+2. It covers roughly 80% of the total value of the U.S. stock market.
+3. It is a market-capitalization-weighted index. Larger companies have a much bigger impact on its value than smaller components
+
+We will use:
+
+```{r}
+library(tidyverse)
+library(tidyquant)
+library(ineq)
+```
+
+The three packages have different roles:
+
+```text
+tidyquant    retrieve the S&P 500 constituents and weights
+tidyverse    manipulate and visualize the data
+ineq         calculate the Lorenz curve and Gini coefficient
+```
+
+## Retrieve the constituents
+
+The function `tq_index()` returns the constituents of the S&P 500 as a tibble, with the weight of each company in the index:
+
+```{r}
+sp500 = tq_index("SP500")
+sp500
+
+# keep companies with a valid weight, sorted by weight
+sp500 =
+  sp500 |>
+  filter(!is.na(weight)) |>
+  arrange(desc(weight))
+
+# number of constituents and sum of weights
+nrow(sp500)
+sum(sp500$weight)
+```
+
+## 1. How unequal are the company weights?
+
+```{r}
+summary(sp500$weight)
+
+# the largest and smallest companies
+head(sp500 |> select(symbol, company, weight), 10)
+tail(sp500 |> select(symbol, company, weight), 10)
+
+# ratio between the largest and the smallest weight
+max(sp500$weight) / min(sp500$weight)
+
+# distribution of weights
+ggplot(sp500, aes(weight)) +
+  geom_histogram(bins = 50)
+```
+
+The weights are highly unequal: the mean is much larger than the median, the distribution is right skewed with a long tail of a few companies with very large weights.
+
+## 2. How much of the index is represented by its largest companies?
+
+```{r}
+# cumulative weight of the largest companies
+concentration =
+  sp500 |>
+  mutate(rank = row_number(), cumulative_weight = cumsum(weight)) |>
+  select(rank, symbol, company, weight, cumulative_weight)
+
+concentration |>
+  filter(rank %in% c(1, 5, 10, 20, 50, 100, 250))
+
+# plot the cumulative weight
+ggplot(concentration, aes(rank, cumulative_weight)) +
+  geom_line() +
+  labs(x = "Number of largest companies", y = "Share of the index")
+```
+
+A handful of companies represents a large share of the index: the 10 largest companies alone represent almost 40% of the index, the 20 largest about half of it, and 100 companies out of about 500 represent three quarters of it.
+
+## 3. What does the Lorenz curve tell us about concentration?
+
+The Lorenz curve plots the cumulative share of the index held by the cumulative share of companies, from the smallest to the largest. The diagonal corresponds to perfect equality (all companies with the same weight), while the more the curve bends away from the diagonal, the more concentrated the index is.
+
+```{r}
+lorenz = Lc(sp500$weight)
+
+df_lorenz = data.frame(p = lorenz$p, L = lorenz$L)
+
+ggplot(df_lorenz, aes(p, L)) +
+  geom_line(linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = "Lorenz curve of the S&P 500 weights",
+    x = "Cumulative share of companies",
+    y = "Cumulative share of the index"
+  ) +
+  theme_minimal()
+```
+
+The curve lies well below the diagonal: the smallest half of the companies holds only a small fraction of the index, while the last few percent of companies hold a large fraction of it.
+
+## 4. What is the Gini coefficient of the S&P 500 weights?
+
+The Gini coefficient is twice the area between the Lorenz curve and the diagonal: it is 0 for perfect equality and tends to 1 for maximum concentration.
+
+```{r}
+Gini(sp500$weight)
+```
+
+The Gini coefficient confirms that the S&P 500 is a concentrated index, although the concentration is lower than that of the voting power in the ENS DAO case seen in class (where the Gini index was above 0.9).
