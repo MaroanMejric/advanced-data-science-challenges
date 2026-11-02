@@ -1,0 +1,227 @@
+---
+title: "Stablecoins — compare USDC, USDT and DAI transaction sizes and volumes"
+author: "Maroan Mejric"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+We want to compare three major Ethereum stablecoins:
+
+-  USDC (smart contract address: 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)
+-  USDT (smart contract address: 0xdac17f958d2ee523a2206206994597c13d831ec7)
+-  DAI (smart contract address: 0x6b175474e89094c44da98b954eedeac495271d0f)
+
+We will investigate two questions:
+
+1. How do their transfer sizes differ?
+2. How much transfer volume does each stablecoin generate?
+
+Our workflow is:
+
+```text
+Ethereum
+   ↓
+Etherscan
+   ↓
+ERC-20 transfer events
+   ↓
+R / tidyverse
+   ↓
+transfer sizes + transfer volumes
+```
+
+We use Etherscan to retrieve the already indexed ERC-20 transfer events. Etherscan's `tokentx` endpoint can be filtered directly by token contract, so we do not need to download unrelated ERC-20 transfers first.
+
+We use the term transfer rather than transaction throughout the lab: one Ethereum transaction can generate several ERC-20 transfer events.
+
+## Setup
+
+The Etherscan API key is stored in the hidden file `.Renviron` as `ETHERSCAN_API_KEY` and read from the environment (the key is never written in the R Markdown file):
+
+```{r}
+library(tidyverse)
+library(httr2)
+
+api_key <- Sys.getenv("ETHERSCAN_API_KEY")
+
+# the three stablecoins and their contract addresses
+stablecoins <- tibble(
+  token = c("USDC", "USDT", "DAI"),
+  contract = c("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+               "0xdac17f958d2ee523a2206206994597c13d831ec7",
+               "0x6b175474e89094c44da98b954eedeac495271d0f")
+)
+```
+
+## Download the transfer events
+
+We write a function that downloads the most recent ERC-20 transfer events of a token contract using the `tokentx` endpoint of the Etherscan API (V2, Ethereum mainnet has `chainid = 1`). Etherscan returns at most 1000 events per page, hence we use pagination as seen in class: we ask for pages until we have the number of events we want or there are no more events. For each token we download the same number of transfers (the latest 10 pages, that is 10,000 transfers).
+
+```{r}
+get_token_transfers <- function(
+    contract,
+    pages = 10,
+    offset = 1000,
+    api_key = Sys.getenv("ETHERSCAN_API_KEY")
+) {
+
+  page <- 1
+  transfers <- list()
+
+  repeat {
+
+    response <- request("https://api.etherscan.io/v2/api") |>
+      req_url_query(
+        chainid = 1,
+        module = "account",
+        action = "tokentx",
+        contractaddress = contract,
+        page = page,
+        offset = offset,
+        sort = "desc",
+        apikey = api_key
+      ) |>
+      req_perform() |>
+      resp_body_json(simplifyVector = TRUE)
+
+    # when there are no transfers, result is a character string
+    if (is.character(response$result)) {
+      break
+    }
+
+    page_data <- response$result |>
+      as_tibble()
+
+    transfers[[page]] <- page_data
+
+    if (nrow(page_data) < offset | page == pages) {
+      break
+    }
+
+    page <- page + 1
+  }
+
+  # clean data: the value is expressed in the smallest unit of the token,
+  # hence it is divided by 10 to the number of decimals of the token
+  bind_rows(transfers) |>
+    transmute(
+      block = as.numeric(blockNumber),
+      time = as.POSIXct(as.numeric(timeStamp), origin = "1970-01-01", tz = "UTC"),
+      hash,
+      from,
+      to,
+      value = as.numeric(value) / 10^as.numeric(tokenDecimal)
+    )
+}
+```
+
+We download the transfers of the three tokens and bind them in a single tibble:
+
+```{r}
+transfers <-
+  stablecoins |>
+  mutate(data = map(contract, get_token_transfers)) |>
+  select(token, data) |>
+  unnest(data)
+
+transfers
+
+# number of transfers and time span covered for each token
+transfers |>
+  group_by(token) |>
+  summarise(
+    transfers = n(),
+    from = min(time),
+    to = max(time),
+    hours = as.numeric(difftime(max(time), min(time), units = "hours"))
+  )
+```
+
+Since we downloaded the same number of transfers for each token, the time span covered tells us how frequent the transfers of each token are: a shorter span means more transfers per hour.
+
+## 1. How do their transfer sizes differ?
+
+```{r}
+# summary statistics of the transfer size (in dollars) of each token
+transfers |>
+  group_by(token) |>
+  summarise(
+    mean = mean(value),
+    median = median(value),
+    q25 = quantile(value, 0.25),
+    q75 = quantile(value, 0.75),
+    max = max(value)
+  )
+
+# distribution of transfer sizes (log scale, zero-value transfers are removed)
+transfers |>
+  filter(value > 0) |>
+  ggplot(aes(value)) +
+  geom_histogram(bins = 50) +
+  scale_x_log10() +
+  facet_wrap(~ token, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Distribution of transfer sizes",
+    x = "Transfer size in dollars (log scale)",
+    y = "Transfers"
+  ) +
+  theme_minimal()
+
+# boxplot of transfer sizes
+transfers |>
+  filter(value > 0) |>
+  ggplot(aes(x = token, y = value)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(x = NULL, y = "Transfer size in dollars (log scale)") +
+  theme_minimal()
+```
+
+The distributions of transfer sizes are extremely skewed: most transfers are small, but a few transfers move millions of dollars, hence the mean is much larger than the median for all three tokens. The comparison of medians and quartiles tells us which stablecoin is used for larger transfers: DAI has the largest typical transfer (its median and upper quartile are well above those of the other two tokens), while USDT has the smallest typical transfer, with USDC in between.
+
+## 2. How much transfer volume does each stablecoin generate?
+
+The volume is the total amount of dollars moved by the transfers. Since the three samples cover different time spans, we also compute the volume and the number of transfers per hour:
+
+```{r}
+volume <-
+  transfers |>
+  group_by(token) |>
+  summarise(
+    transfers = n(),
+    hours = as.numeric(difftime(max(time), min(time), units = "hours")),
+    volume = sum(value),
+    transfers_per_hour = transfers / hours,
+    volume_per_hour = volume / hours
+  ) |>
+  arrange(desc(volume_per_hour))
+
+volume
+
+ggplot(volume, aes(x = token, y = volume_per_hour)) +
+  geom_col() +
+  labs(
+    title = "Transfer volume per hour",
+    x = NULL,
+    y = "Dollars per hour"
+  ) +
+  theme_minimal()
+```
+
+USDC and USDT are transferred much more frequently than DAI: their 10,000 transfers cover a few minutes, while the 10,000 transfers of DAI span several hours. Even if the typical DAI transfer is larger, USDC generates the largest volume per hour, followed by USDT, while DAI is far behind.
+
+Finally, we check how much of the volume of each token is due to the largest transfers:
+
+```{r}
+transfers |>
+  group_by(token) |>
+  arrange(desc(value), .by_group = TRUE) |>
+  mutate(cumulative_share = cumsum(value) / sum(value), rank = row_number()) |>
+  filter(rank %in% c(10, 100, 1000)) |>
+  select(token, rank, cumulative_share)
+```
+
+A small number of very large transfers accounts for a large share of the volume of each stablecoin: the 10 largest transfers alone move more than half of the volume of each token, and the 1000 largest (10% of the sample) move more than 90% of it.
