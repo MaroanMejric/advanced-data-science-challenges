@@ -1,0 +1,117 @@
+---
+title: "How life expectancy change over time for each continent?"
+author: "Maroan Mejric"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, message = FALSE, warning = FALSE, fig.align = 'center')
+```
+
+In this data challenge we use again the [gapminder](https://www.gapminder.org/) data, which summarises the progression of countries over time. We focus on the variables life expectancy (`lifeExp`) and population (`pop`) of a country:
+
+```{r}
+library(tidyverse)
+library(gapminder)
+
+gapminder
+```
+
+Life expectancy for a country is the mean length of life over people of a country. Using variables life expectancy and population of a country, we:
+
+1. derive a formula to compute life expectancy of a continent (a group of countries)
+2. plot how life expectancy changed over time for each continent
+3. do the same for the whole planet
+
+## 1. Life expectancy of a continent
+
+Consider a continent made of $n$ countries, and let $p_i$ and $e_i$ be the population and the life expectancy of the $i$-th country. Since life expectancy is the mean length of life over the people of a country, the total length of life of all the people of country $i$ is $p_i \cdot e_i$. The life expectancy of the continent is again the mean length of life over all its people, that is the total length of life of the people of the continent divided by the number of people of the continent:
+
+$$
+e = \frac{\sum_{i=1}^{n} p_i \, e_i}{\sum_{i=1}^{n} p_i}
+$$
+
+Hence the life expectancy of a continent is the **weighted mean** of the life expectancies of its countries, with the populations of the countries as weights. In R this is computed by the function `weighted.mean()`.
+
+Notice that the simple (unweighted) mean of the life expectancies of the countries would give the same importance to China and to Mongolia, while the weighted mean gives to each country an importance proportional to its population. The difference is visible when we compare the two means in 2007:
+
+```{r}
+gapminder |>
+  filter(year == 2007) |>
+  group_by(continent) |>
+  summarise(
+    countries = n(),
+    weighted_mean = weighted.mean(lifeExp, pop),
+    simple_mean = mean(lifeExp),
+    pop = sum(pop)
+  )
+```
+
+In the Americas the weighted mean is almost two years larger than the simple mean, since the United States, which holds one third of the population of the continent, has a life expectancy (78 years) well above the mean of the countries; in Asia it is the opposite, since India, which holds almost 30% of the population of the continent, has a life expectancy (65 years) well below the mean of the countries.
+
+## 2. Life expectancy of continents over time
+
+We group the data by continent and year and apply the formula:
+
+```{r}
+by_continent =
+  gapminder |>
+  group_by(continent, year) |>
+  summarise(lifeExp = weighted.mean(lifeExp, pop), pop = sum(pop)) |>
+  ungroup()
+
+by_continent
+```
+
+We plot how life expectancy changed over time for each continent (using the colors of continents provided by the gapminder package):
+
+```{r}
+ggplot(by_continent, aes(year, lifeExp, color = continent)) +
+  geom_line() +
+  geom_point() +
+  scale_colour_manual(values = continent_colors) +
+  labs(x = "Year", y = "Life expectancy (years)", color = "Continent") +
+  theme_classic()
+```
+
+Life expectancy increased in all continents, but the gap between continents is still wide. We compute the life expectancy at the beginning (1952) and at the end (2007) of the period and the years of life gained:
+
+```{r}
+by_continent |>
+  filter(year %in% c(1952, 2007)) |>
+  select(continent, year, lifeExp) |>
+  pivot_wider(names_from = year, values_from = lifeExp, names_prefix = "year_") |>
+  mutate(gain = year_2007 - year_1952) |>
+  arrange(desc(gain))
+```
+
+Asia is the continent with the largest growth: its life expectancy increased by more than 26 years, from 43 years in 1952 to 69 years in 2007, hence the gap between Asia and Europe reduced from 22 years in 1952 to less than 9 years in 2007. Europe and Oceania started from the highest values and grew less (about 12-13 years), since they were already close to the biological limits. Africa started from the lowest value and gained about 16 years, but its curve flattens after 1987: for fifteen years life expectancy stayed around 53 years, because of the HIV/AIDS epidemic, as we saw in the analysis of the single countries. Notice also the drop of Asia in 1962, which is due to the Great Chinese Famine (1959-1961): China held about 40% of the population of Asia in 1962, hence its tragedy is visible in the curve of the whole continent.
+
+## 3. Life expectancy of the whole planet
+
+The same formula applies to the planet, which is the group of all countries. We group the data by year only:
+
+```{r}
+world =
+  gapminder |>
+  group_by(year) |>
+  summarise(lifeExp = weighted.mean(lifeExp, pop), pop = sum(pop))
+
+world
+```
+
+We plot the life expectancy of the planet together with those of the continents:
+
+```{r}
+ggplot(by_continent, aes(year, lifeExp, color = continent)) +
+  geom_line() +
+  geom_point() +
+  geom_line(data = world, aes(year, lifeExp), color = "black", linewidth = 1.2, linetype = "dashed") +
+  geom_point(data = world, aes(year, lifeExp), color = "black") +
+  scale_colour_manual(values = continent_colors) +
+  labs(x = "Year", y = "Life expectancy (years)", color = "Continent",
+       title = "Life expectancy of continents and of the planet (dashed line)") +
+  theme_classic()
+```
+
+Life expectancy of the planet grew by 20 years, from 49 years in 1952 to 69 years in 2007. The curve of the planet is close to the curve of Asia, since Asia holds about 60% of the world population, hence its weight in the formula is the largest: in particular, the planet curve is flat between 1957 and 1962 because of the Great Chinese Famine. Notice that the distance between the planet and Europe reduced from 16 years in 1952 to 9 years in 2007, while the distance between Africa and the planet increased from 10 to 14 years: in 2007 Africa is the only continent clearly below the world average.
