@@ -1,0 +1,134 @@
+---
+title: "Diamonds quality"
+author: "Maroan Mejric"
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, echo = TRUE, message = FALSE, warning = FALSE, fig.align = 'center')
+```
+
+In this data challenge we explore the qualities of diamonds and their association with price using the `ggplot2::diamonds` dataset. The dataset contains the prices and other attributes of almost 54,000 diamonds. The main attributes are:
+
+* **price**: price in US dollars
+* **carat**: weight of the diamond
+* **cut**: quality of the cut (Fair, Good, Very Good, Premium, Ideal)
+* **color**: diamond colour, from D (best) to J (worst)
+* **clarity**: a measurement of how clear the diamond is (I1 (worst), SI2, SI1, VS2, VS1, VVS2, VVS1, IF (best))
+
+```{r}
+library(tidyverse)
+library(modelr)
+
+diamonds
+```
+
+## 1. Low quality diamonds are more expensive
+
+We look at the covariation between price and each of the three quality variables with boxplots (qualitative versus quantitative covariation):
+
+```{r}
+ggplot(data = diamonds) +
+  geom_boxplot(mapping = aes(x = cut, y = price))
+
+ggplot(data = diamonds) +
+  geom_boxplot(mapping = aes(x = color, y = price))
+
+ggplot(data = diamonds) +
+  geom_boxplot(mapping = aes(x = clarity, y = price))
+```
+
+The median price is computed for each level of quality:
+
+```{r}
+diamonds |>
+  group_by(cut) |>
+  summarise(n = n(), median_price = median(price))
+
+diamonds |>
+  group_by(color) |>
+  summarise(n = n(), median_price = median(price))
+
+diamonds |>
+  group_by(clarity) |>
+  summarise(n = n(), median_price = median(price))
+```
+
+Surprisingly, low quality diamonds are more expensive: the median price of diamonds with the worst cut (Fair) is higher than that of diamonds with the best cut (Ideal); the worst color (J) is more expensive than the best color (D); the worst clarity (I1) is more expensive than the best clarity (IF).
+
+## 2. Find an explanation and solve the apparent paradox
+
+The most important factor for the price of a diamond is its weight (carat). The scatterplot shows a strong (non linear) correlation between carat and price:
+
+```{r}
+ggplot(data = diamonds) +
+  geom_point(mapping = aes(x = carat, y = price), alpha = 0.05)
+
+# on log scales the relationship is linear
+ggplot(data = diamonds) +
+  geom_point(mapping = aes(x = log(carat), y = log(price)), alpha = 0.05)
+```
+
+Moreover, lower quality diamonds tend to be larger:
+
+```{r}
+ggplot(data = diamonds) +
+  geom_boxplot(mapping = aes(x = cut, y = carat))
+
+ggplot(data = diamonds) +
+  geom_boxplot(mapping = aes(x = color, y = carat))
+
+ggplot(data = diamonds) +
+  geom_boxplot(mapping = aes(x = clarity, y = carat))
+```
+
+Hence weight is a confounding variable: large diamonds are expensive and large diamonds often have a low quality, so low quality diamonds appear to be expensive.
+
+To solve the paradox we remove the effect of weight with a model. We fit a linear model of log price in terms of log carat, that captures the strong pattern, and we study the residuals, that tell us what the model has missed, namely the effect of the other variables.
+
+```{r}
+# linear model on log scales
+mod = lm(log(price) ~ log(carat), data = diamonds)
+mod$coefficients
+
+# add the residuals to the data
+diamonds2 =
+  diamonds |>
+  add_residuals(mod, "lresid")
+
+# the residuals of the model
+ggplot(diamonds2, aes(carat, lresid)) +
+  geom_ref_line(h = 0) +
+  geom_point(alpha = 0.05)
+```
+
+The residual of a diamond is the (log) price not explained by its weight: a positive residual means that the diamond is more expensive than expected for its weight. Now we repeat the boxplots using the residuals instead of the price:
+
+```{r}
+ggplot(data = diamonds2) +
+  geom_boxplot(mapping = aes(x = cut, y = lresid))
+
+ggplot(data = diamonds2) +
+  geom_boxplot(mapping = aes(x = color, y = lresid))
+
+ggplot(data = diamonds2) +
+  geom_boxplot(mapping = aes(x = clarity, y = lresid))
+```
+
+```{r}
+diamonds2 |>
+  group_by(cut) |>
+  summarise(median_resid = median(lresid))
+
+diamonds2 |>
+  group_by(color) |>
+  summarise(median_resid = median(lresid))
+
+diamonds2 |>
+  group_by(clarity) |>
+  summarise(median_resid = median(lresid))
+```
+
+Once the effect of weight is removed, the relationship is the one we expect: for diamonds of the same weight, the better the cut, the color and the clarity, the higher the price.
